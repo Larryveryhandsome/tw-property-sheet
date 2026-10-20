@@ -185,7 +185,9 @@
         <div class="field-row" style="margin-bottom:8px">
           <button class="btn-small" onclick="lookupParcel()">🗺️ 查地籍圖（地號形狀、約略面積）</button>
           <button class="btn-small" onclick="openNLSC()" style="margin-left:6px">開國土測繪圖台</button>
+          <button class="btn-small" id="moi-btn" onclick="officialLand()" style="margin-left:6px">🏛️ 官方面積核對</button>
         </div>
+        <div id="moi-status" class="status-msg"></div>
         <div id="parcel-status" class="status-msg"></div>
         <div id="parcel-map" style="display:none"></div>
         <div class="field-row-3">

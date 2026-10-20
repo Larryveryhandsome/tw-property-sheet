@@ -30,7 +30,7 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile  # noqa: E402
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 
-from services import ai, geo, parcel, risk, tenement  # noqa: E402
+from services import ai, geo, moi, parcel, risk, tenement  # noqa: E402
 from sheet.excel import generate_excel  # noqa: E402
 from sheet.schemas import PropertyForm  # noqa: E402
 
@@ -55,7 +55,8 @@ async def health():
 
 @app.get("/api/settings")
 async def settings():
-    return {"brand": BRAND, "ai": ai.enabled()}
+    return {"brand": BRAND, "ai": ai.enabled(), "moi": moi.enabled(),
+            "moi_used_today": moi.used_today(), "moi_daily_limit": moi.daily_limit()}
 
 
 @app.get("/api/dropdown-options")
@@ -101,6 +102,33 @@ async def parcel_lookup(county: str = Form(...), section: str = Form(...), numbe
         raise HTTPException(400, str(e))
     except Exception as e:
         raise HTTPException(502, f"國土測繪服務暫時查不到：{type(e).__name__}")
+
+
+@app.post("/api/official-land")
+async def official_land(county: str = Form(...), section: str = Form(...), number: str = Form(...),
+                        confirm: str = Form(""), compare_ping: str = Form("")):
+    """選用：內政部地政平台官方土地標示部（要自備金鑰、每筆收費）。必須帶 confirm=1 才會真的查。"""
+    if not moi.enabled():
+        raise HTTPException(400, "還沒設定地政平台金鑰（MOI_COP_CLIENT_ID／MOI_COP_SECRET），申請方式見 docs/金鑰申請.md")
+    try:
+        office, sect, town, sname = await parcel.resolve_section(county, section)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    no8 = parcel.landno8(number)
+    hit = moi.cached(office, sect, no8)
+    if not hit and confirm != "1":
+        raise HTTPException(409, "這筆會向地政平台查詢並收費，請確認後再按一次")
+    try:
+        import asyncio
+        r = hit and {**hit, "cached": True} or await asyncio.to_thread(moi.query_land, office, sect, no8)
+    except moi.MoiError as e:
+        raise HTTPException(400, str(e))
+    try:
+        cmp_val = float(compare_ping) if compare_ping else None
+    except ValueError:
+        cmp_val = None
+    return {**r, "town": town, "section": sname, "number": number, "compare": moi.compare(r["area_ping"], cmp_val),
+            "used_today": moi.used_today(), "daily_limit": moi.daily_limit()}
 
 
 @app.post("/api/risk")

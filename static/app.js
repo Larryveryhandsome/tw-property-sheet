@@ -21,6 +21,9 @@ async function loadSettings() {
     const s = await (await fetch('/api/settings')).json();
     document.getElementById('brand-name').textContent = s.brand;
     document.title = `物調表產生器 | ${s.brand}`;
+    window.MOI = s;
+    const b = document.getElementById('moi-btn');
+    if (b) b.title = s.moi ? `內政部地政平台官方土地標示部，每筆約 NT$1（今天已查 ${s.moi_used_today}/${s.moi_daily_limit}）` : '需要自備地政平台金鑰，見 docs/金鑰申請.md';
   } catch (e) { /* 用預設名稱 */ }
 }
 
@@ -277,6 +280,38 @@ async function lookupParcel() {
       (d.parts.length > 1 ? `，由 ${d.parts.length} 塊組成` : ''), 'success');
   } catch (e) {
     setStatus('parcel-status', `❌ ${e.message}`, 'error');
+  }
+}
+
+async function officialLand(confirmed) {
+  if (!window.MOI || !window.MOI.moi) {
+    setStatus('moi-status', '這個功能要自備「內政部地政整合資訊服務共享協作平台」金鑰，每筆約 NT$1。申請與設定步驟見專案的 docs/金鑰申請.md。', 'error');
+    return;
+  }
+  const county = val('land_county'), section = val('land_section'), number = val('land_number');
+  if (!county || !section || !number) { setStatus('moi-status', '請先填縣市、地段、地號', 'error'); return; }
+  const fd = new FormData();
+  fd.append('county', county); fd.append('section', section); fd.append('number', number);
+  fd.append('compare_ping', val('land_area_all'));
+  if (confirmed) fd.append('confirm', '1');
+  setStatus('moi-status', '🏛️ 查詢地政平台中...', 'loading');
+  try {
+    const res = await fetch('/api/official-land', { method: 'POST', body: fd });
+    const d = await res.json();
+    if (res.status === 409) {
+      const el = document.getElementById('moi-status');
+      el.className = 'status-msg loading';
+      el.innerHTML = `這筆（${esc(section)} ${esc(number)} 地號）要向地政平台查詢，<b>會收費（約 NT$1）</b>。今天已查 ${window.MOI.moi_used_today} 筆。 <button class="btn-small" id="moi-confirm">確認查詢</button>`;
+      document.getElementById('moi-confirm').onclick = () => officialLand(true);
+      return;
+    }
+    if (!res.ok) throw new Error(d.detail || res.status);
+    window.MOI.moi_used_today = d.used_today;
+    const cmp = d.compare && d.compare.other_ping ? `；表單上的土地坪數 ${d.compare.other_ping} 坪，相差 ${d.compare.diff_pct}%${d.compare.ok ? '' : ' ⚠️ 超過 3%，請確認'}` : '';
+    setStatus('moi-status', `✅ 官方面積 ${d.area_sqm.toLocaleString()} ㎡（${d.area_ping} 坪）${d.cached ? '（之前查過，這次沒收費）' : ''}${cmp}`, d.compare && d.compare.ok === false ? 'error' : 'success');
+    if (!val('land_area_all')) setVal('land_area_all', d.area_ping);
+  } catch (e) {
+    setStatus('moi-status', `❌ ${e.message}`, 'error');
   }
 }
 
