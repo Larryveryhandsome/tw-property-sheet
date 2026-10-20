@@ -109,7 +109,7 @@ async function lookupAddress() {
   const address = val('address');
   if (!address) { alert('請先輸入地址'); return; }
 
-  setStatus('address-status', '🔍 查詢中...', 'loading');
+  setStatus('address-status', '🔍 查詢中...（周邊公園、車站在公開站台忙碌時最久可能要 30 秒，查不到會留空，可自己填）', 'loading');
   try {
     const fd = new FormData();
     fd.append('address', address);
@@ -460,12 +460,12 @@ function buildPreview() {
     ['主建坪', val('build_area_main')],
     ['結構', val('structure')],
     ['外觀', val('appearance')],
-    ['格局', `${val('room_count')}房${val('hall_count')}廳${val('bath_count')}衛`],
-    ['完工', `民國${val('finish_year')}年${val('finish_month')}月`],
+    ['格局', (val('room_count') || val('hall_count') || val('bath_count')) ? `${val('room_count') || 0}房${val('hall_count') || 0}廳${val('bath_count') || 0}衛` : ''],
+    ['完工', val('finish_year') ? `民國${val('finish_year')}年${val('finish_month')}月` : ''],
     ['土地屬性', `${val('land_zone_type')} ${val('land_zone_name')}`],
     ['車位', val('parking')],
     ['管理', val('management')],
-    ['學區', `國小：${val('school_elem')} / 國中：${val('school_mid')}`],
+    ['學區', [val('school_elem') && `國小：${val('school_elem')}`, val('school_mid') && `國中：${val('school_mid')}`].filter(Boolean).join(' / ')],
     ['營業員', val('agent')],
   ];
   box.innerHTML = `<h3>📋 資料摘要</h3><table class="result-table">` +
@@ -580,6 +580,7 @@ function collectForm() {
     claimed_build_area_total: numVal('claimed_build_area_total'),
     claimed_land_area_share: numVal('claimed_land_area_share'),
     risk_notes: val('risk_notes'),
+    main_use: deedData.main_use || null,
     build_share: deedData.build_share || null,
     acquire_date: deedData.acquire_date || null,
     acquire_reason: deedData.acquire_reason || null,

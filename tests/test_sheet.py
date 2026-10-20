@@ -92,6 +92,16 @@ class ExcelTest(unittest.TestCase):
         self.assertEqual(ws["A2"].value, "示範不動產")
         self.assertEqual(form.missing_fields, [])
 
+    def test_empty_management_is_blank_not_False(self):
+        """沒選管理方式、沒填管理費時，Excel 的「管理」欄要空白（曾經會寫出 False 字串）。"""
+        sample = {**SAMPLE, "management": "", "mgmt_fee": None, "mgmt_period": "", "main_use": "集合住宅"}
+        v = derive(PropertyForm(**sample), today=TODAY)
+        self.assertIsNone(v["mgmt_text"])
+        ws = load_workbook(io.BytesIO(generate_excel(PropertyForm(**sample), today=TODAY))).active
+        m = cell_map()
+        self.assertIn(ws[m["mgmt_text"]].value, (None, ""))
+        self.assertEqual(ws[m["main_use"]].value, "集合住宅")
+
     def test_missing_marked_yellow(self):
         form = PropertyForm(address="示範路1號")
         ws = load_workbook(io.BytesIO(generate_excel(form, today=TODAY))).active

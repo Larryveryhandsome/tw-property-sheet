@@ -78,7 +78,7 @@ def _n(v, digits=2):
 
 
 def _join(parts, sep="，"):
-    parts = [str(p) for p in parts if p not in (None, "")]
+    parts = [str(p) for p in parts if p is not None and p is not False and p != ""]
     return sep.join(parts) if parts else None
 
 
