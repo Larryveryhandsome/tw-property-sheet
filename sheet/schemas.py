@@ -79,8 +79,23 @@ class PropertyForm(BaseModel):
     nearby_station: Optional[str] = None
     nearby_market: Optional[str] = None
     others: Optional[str] = None
+    # 謄本帶出的權利與價格資訊
+    land_share: Optional[str] = None             # 土地權利範圍，例如 100分之5
+    build_share: Optional[str] = None            # 建物權利範圍
+    land_value_per_sqm: Optional[float] = None   # 公告土地現值（元/平方公尺）
+    land_price_per_sqm: Optional[float] = None   # 公告地價（元/平方公尺）
+    acquire_date: Optional[str] = None           # 現任所有權人取得日（西元）
+    acquire_reason: Optional[str] = None
+    holding_years: Optional[float] = None
+    encumbrance_kinds: List[str] = []            # 他項權利種類（不含權利人）
+    encumbrance_amount: Optional[float] = None   # 擔保債權總金額（元）
+    deed_date: Optional[str] = None              # 謄本查詢日
+    # 委託書上的坪數（和謄本比對用）
+    claimed_build_area_total: Optional[float] = None
+    claimed_land_area_share: Optional[float] = None
     # 文字
     sell_points: Optional[str] = None
     notes: Optional[str] = None
+    risk_notes: Optional[str] = None             # 上架前風險提示（自動產生，可修改）
 
     missing_fields: List[str] = []

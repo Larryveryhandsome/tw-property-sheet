@@ -9,6 +9,7 @@ import os
 import sys
 from datetime import date
 from pathlib import Path
+from typing import List
 from urllib.parse import quote
 
 BASE = Path(__file__).resolve().parent
@@ -29,7 +30,7 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile  # noqa: E402
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 
-from services import ai, geo, tenement  # noqa: E402
+from services import ai, geo, parcel, risk, tenement  # noqa: E402
 from sheet.excel import generate_excel  # noqa: E402
 from sheet.schemas import PropertyForm  # noqa: E402
 
@@ -65,10 +66,15 @@ async def options():
 @app.post("/api/lookup-address")
 async def lookup_address(address: str = Form(...)):
     """地址 → 座標、行政區、地段、周邊設施（全部是公開服務，查不到就留空）。"""
-    pt = await geo.geocode(address)
+    # 先用國土測繪門牌定位（只接受門牌完全相符），查不到再用 ArcGIS
+    pt = await parcel.geocode_address(address)
+    source = "國土測繪門牌"
+    if not pt:
+        pt = await geo.geocode(address)
+        source = "ArcGIS"
     if not pt:
         raise HTTPException(400, f"無法定位：{address}")
-    out = {"lon": pt["lon"], "lat": pt["lat"], "score": pt["score"]}
+    out = {"lon": pt["lon"], "lat": pt["lat"], "geocoder": source}
     out.update(await geo.town_village(pt["lon"], pt["lat"]))
     places = await geo.nearby(pt["lat"], pt["lon"])
     out.update({"nearby_park": places.get("park", ""), "nearby_market": places.get("market", ""),
@@ -86,6 +92,23 @@ async def parse_tenement(file: UploadFile = File(...)):
     return tenement.parse_pdf(data)
 
 
+@app.post("/api/parcel")
+async def parcel_lookup(county: str = Form(...), section: str = Form(...), number: str = Form(...), town: str = Form("")):
+    """地號 → 地籍形狀、約略面積、面寬深度（國土測繪公開圖台，一次一筆）。"""
+    try:
+        return await parcel.lookup(county, section, number, town)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(502, f"國土測繪服務暫時查不到：{type(e).__name__}")
+
+
+@app.post("/api/risk")
+async def risk_check(deed_json: str = Form("{}"), form_json: str = Form("{}")):
+    items = risk.check(json.loads(deed_json), json.loads(form_json))
+    return {"summary": risk.summary(items), "items": items, "text": risk.text_for_sheet(items)}
+
+
 @app.post("/api/generate-name")
 async def gen_name(form_json: str = Form(...)):
     return {"case_name": ai.case_name(json.loads(form_json))}
@@ -96,15 +119,26 @@ async def gen_points(form_json: str = Form(...)):
     return {"sell_points": ai.sell_points(json.loads(form_json))}
 
 
+MAX_PHOTOS, MAX_PHOTO = 6, 15 * 1024 * 1024
+
+
 @app.post("/api/generate")
-async def generate(form_json: str = Form(...)):
+async def generate(form_json: str = Form(...), photos: List[UploadFile] = File(default=[])):
     try:
         form = PropertyForm(**json.loads(form_json))
     except Exception as e:
         raise HTTPException(400, f"表單錯誤：{e}")
     form.date_today = form.date_today or date.today().isoformat()
-    xlsx = generate_excel(form, Path(TEMPLATE) if TEMPLATE else None,
-                          title="物件調查表", subtitle=BRAND)
+    pics = []
+    for f in (photos or [])[:MAX_PHOTOS]:
+        data = await f.read()
+        if data and len(data) <= MAX_PHOTO:
+            pics.append((f.filename or "照片", data))
+    try:
+        xlsx = generate_excel(form, Path(TEMPLATE) if TEMPLATE else None,
+                              title="物件調查表", subtitle=BRAND, photos=pics)
+    except Exception as e:  # 壞掉的圖片檔
+        raise HTTPException(400, f"照片讀不了：{type(e).__name__}")
     name = f"物調表_{(form.address or form.case_number or '未命名')[:20]}.xlsx".replace("/", "_")
     return StreamingResponse(io.BytesIO(xlsx),
                              media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

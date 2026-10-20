@@ -109,7 +109,7 @@ class ExcelTest(unittest.TestCase):
             self.assertEqual(ws["A1"].value, "我的物調表")
 
     def test_layout_rows_match_sections(self):
-        self.assertEqual(sum(1 for i in LAYOUT if i[0] == "section"), 5)
+        self.assertEqual(sum(1 for i in LAYOUT if i[0] == "section"), 6)
 
 
 class TenementTest(unittest.TestCase):

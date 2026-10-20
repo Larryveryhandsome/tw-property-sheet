@@ -5,6 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>物調表產生器</title>
 <link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" integrity="sha512-h9FcoyWjHcOcmEVkxOfTLnmZFWIH0iZhZT1H2TbOq55xssQGEJHEaIm+PgoUaZbRvQTNTluNOEfb1ZRy6D3BOw==" crossorigin="anonymous" referrerpolicy="no-referrer">
+<style>#parcel-map{height:320px;border-radius:8px;margin-top:8px;border:1px solid #dde3e8}.risk-red{color:#b42318}.risk-yellow{color:#9a6700}.risk-green{color:#1a7f37}.risk-list{list-style:none;padding:0;margin:8px 0}.risk-list li{margin:4px 0}</style>
 </head>
 <body>
 <div id="app">
@@ -106,12 +108,13 @@
       <h2>🏗️ 物件資訊</h2>
 
       <div class="card">
-        <h3>建物謄本 <span class="hint">（上傳 PDF 自動解析）</span></h3>
+        <h3>土地／建物謄本 <span class="hint">（電子謄本 PDF，可一次選多份）</span></h3>
         <div class="upload-box" onclick="document.getElementById('tenement-file').click()">
-          <input type="file" id="tenement-file" accept=".pdf" hidden>
-          <div>📑 點此上傳建物謄本 PDF → 自動填入坪數/樓層/屋齡</div>
+          <input type="file" id="tenement-file" accept=".pdf" multiple hidden onchange="parseTenement()">
+          <div>📑 點此上傳謄本 → 自動填坪數、樓層、屋齡、使用分區、公告現值、權利範圍，並做上架前風險檢查</div>
         </div>
-        <button class="btn-small" onclick="parseTenement()" style="margin-top:8px">⚙️ 解析謄本</button>
+        <p class="hint">只在你的電腦上解析，不抓所有權人姓名。掃描成圖片的謄本抓不到文字，請手動填。</p>
+        
         <div id="tenement-status" class="status-msg"></div>
         <div id="tenement-result" class="auto-result-box" style="display:none"></div>
       </div>
@@ -149,12 +152,42 @@
             <input type="number" id="land_area_share" step="0.01" placeholder="坪">
           </div>
         </div>
+        <div class="field-row-3">
+          <div class="field-group">
+            <label>權利範圍</label>
+            <input type="text" id="land_share" placeholder="例：100分之25">
+          </div>
+          <div class="field-group">
+            <label>公告土地現值（元/㎡）</label>
+            <input type="number" id="land_value_per_sqm">
+          </div>
+          <div class="field-group">
+            <label>公告地價（元/㎡）</label>
+            <input type="number" id="land_price_per_sqm">
+          </div>
+        </div>
+        <div class="field-row-3">
+          <div class="field-group">
+            <label>縣市（查地籍用）</label>
+            <input type="text" id="land_county" placeholder="自動查詢會帶入">
+          </div>
+          <div class="field-group">
+            <label>委託書建物坪數</label>
+            <input type="number" id="claimed_build_area_total" step="0.01" placeholder="和謄本比對用">
+          </div>
+          <div class="field-group">
+            <label>委託書土地持分坪數</label>
+            <input type="number" id="claimed_land_area_share" step="0.01" placeholder="和謄本比對用">
+          </div>
+        </div>
 
         <h3 style="margin-top:12px">土地屬性（國土測繪）</h3>
         <div class="field-row" style="margin-bottom:8px">
-          <button class="btn-small" onclick="openNLSC()">🗺️ 開啟國土測繪查詢</button>
-          <span class="hint" style="margin-left:8px">查完後選擇下方選項</span>
+          <button class="btn-small" onclick="lookupParcel()">🗺️ 查地籍圖（地號形狀、約略面積）</button>
+          <button class="btn-small" onclick="openNLSC()" style="margin-left:6px">開國土測繪圖台</button>
         </div>
+        <div id="parcel-status" class="status-msg"></div>
+        <div id="parcel-map" style="display:none"></div>
         <div class="field-row-3">
           <div class="field-group">
             <label>都計內/外</label>
@@ -191,6 +224,10 @@
             <div class="field-group">
               <label>面寬（米）</label>
               <input type="number" id="width" step="0.1">
+            </div>
+            <div class="field-group">
+              <label>深度（米）</label>
+              <input type="number" id="depth" step="0.1">
             </div>
           </div>
         </div>
@@ -462,6 +499,12 @@
       </div>
 
       <div class="card">
+        <h3>📸 現場照片 <span class="hint">（選填，最多 6 張，放在 Excel 第二頁；會自動縮圖並去除 GPS 等 EXIF 資訊）</span></h3>
+        <input type="file" id="site-photos" accept="image/jpeg,image/png" multiple onchange="previewPhotos()">
+        <div id="photo-preview" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px"></div>
+      </div>
+
+      <div class="card">
         <label>注意事項（業務填寫）</label>
         <textarea id="notes" rows="3" placeholder="特殊情況或注意事項..."></textarea>
       </div>
@@ -477,6 +520,12 @@
       <h2>✅ 確認與下載</h2>
 
       <div id="preview-box" class="preview-box"></div>
+
+      <div class="card">
+        <h3>🚦 上架前風險提示 <button class="btn-small" onclick="runRisk()" style="margin-left:8px">重新檢查</button></h3>
+        <div id="risk-box" class="hint">上傳謄本後會自動檢查：短期交易、他項權利、謄本鮮度、坪數落差、持分。</div>
+        <textarea id="risk_notes" rows="4" placeholder="自動產生，可修改；會寫進 Excel 的「上架前風險提示」"></textarea>
+      </div>
 
       <div class="card">
         <h3>🤖 AI 生成</h3>
@@ -508,6 +557,7 @@
   </div><!-- main-container -->
 </div><!-- app -->
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js" integrity="sha512-puJW3E/qXDqYp9IfhAI54BJEaWIfloJ7JWs7OeD5i6ruC9JZL1gERT1wjtwXFlh7CjE7ZJ+/vcRZRkIYIb6p4g==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>

@@ -6,6 +6,8 @@
 let OPTIONS = {};
 let currentStep = 1;
 let autoData = {}; // 自動查詢結果暫存
+let deedData = {}; // 謄本解析結果（土地＋建物合併）
+let parcelMap = null;
 
 // ─── 初始化 ──────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', async () => {
@@ -114,6 +116,7 @@ async function lookupAddress() {
 
     // 填入自動查詢結果
     setIfEmpty('land_section', autoData.land_section);
+    setIfEmpty('land_county', autoData.county);
     setIfEmpty('land_number', autoData.land_number);
     setIfEmpty('village', autoData.village);
     setIfEmpty('nearby_park', autoData.nearby_park, true);
@@ -136,57 +139,157 @@ async function lookupAddress() {
 
 // ─── 謄本解析 ─────────────────────────────────────────────────
 async function parseTenement() {
-  const file = document.getElementById('tenement-file').files[0];
-  if (!file) { alert('請先上傳謄本 PDF'); return; }
-
-  setStatus('tenement-status', '⚙️ 解析中...', 'loading');
-  const fd = new FormData();
-  fd.append('file', file);
-  try {
-    const res = await fetch('/api/parse-tenement', { method: 'POST', body: fd });
-    const data = await res.json();
-
-    // 自動填入
-    const fillMap = {
-      'land_section': data.land_section,
-      'land_number': data.land_number,
-      'build_number': data.build_number,
-      'build_area_main': data.build_area_main,
-      'build_area_sub': data.build_area_sub,
-      'build_area_pub': data.build_area_pub,
-      'floor_above': data.floor_above,
-      'floor_current': data.floor_current,
-      'finish_year': data.finish_year,
-      'finish_month': data.finish_month,
-      'finish_day': data.finish_day,
-      'structure': data.structure,
-    };
-    for (const [id, v] of Object.entries(fillMap)) {
-      if (v != null) setVal(id, v);
+  const files = [...document.getElementById('tenement-file').files];
+  if (!files.length) return;
+  setStatus('tenement-status', `⚙️ 解析 ${files.length} 份謄本中...`, 'loading');
+  const done = [];
+  for (const file of files) {
+    const fd = new FormData();
+    fd.append('file', file);
+    try {
+      const res = await fetch('/api/parse-tenement', { method: 'POST', body: fd });
+      if (!res.ok) throw new Error((await res.json()).detail || res.status);
+      const data = await res.json();
+      if (!data.kind) { done.push(`⚠️ ${file.name}：看不出是土地或建物謄本（可能是掃描圖檔）`); continue; }
+      // 建物謄本的地段地號是「坐落地號」；已經有土地謄本時以土地謄本為準
+      if (data.kind === 'building' && deedData._landKind) { delete data.land_section; delete data.land_number; }
+      if (data.kind === 'land') deedData._landKind = true;
+      mergeDeed(deedData, data);
+      done.push(`✅ ${file.name}（${data.kind === 'land' ? '土地' : '建物'}謄本）`);
+    } catch (e) {
+      done.push(`❌ ${file.name}：${e.message}`);
     }
-    calcTotal();
-    calcAge();
-
-    // 顯示結果摘要
-    const box = document.getElementById('tenement-result');
-    box.style.display = 'block';
-    box.innerHTML = `<h4>✅ 謄本解析結果</h4>
-      <table class="result-table">
-        <tr><td>建號</td><td>${esc(data.build_number || '─')}</td></tr>
-        <tr><td>地號</td><td>${esc(data.land_section || '')}${esc(data.land_number || '─')}</td></tr>
-        <tr><td>主建坪</td><td>${esc(data.build_area_main ?? '─')}</td></tr>
-        <tr><td>附屬坪</td><td>${esc(data.build_area_sub ?? '─')}</td></tr>
-        <tr><td>公設坪</td><td>${esc(data.build_area_pub ?? '─')}</td></tr>
-        <tr><td>樓層</td><td>${esc(data.floor_current ?? '─')}樓 / 共${esc(data.floor_above ?? '─')}樓</td></tr>
-        <tr><td>結構</td><td>${esc(data.structure || '─')}</td></tr>
-        <tr><td>完工</td><td>民國${esc(data.finish_year ?? '─')}年${esc(data.finish_month ?? '─')}月</td></tr>
-        <tr><td>屋齡</td><td>${esc(data.age_years ?? '─')} 年</td></tr>
-      </table>`;
-
-    setStatus('tenement-status', '✅ 解析完成', 'success');
-  } catch (e) {
-    setStatus('tenement-status', `❌ 解析失敗：${e.message}`, 'error');
   }
+  fillFromDeed(deedData);
+  setStatus('tenement-status', done.join('　'), done.some(x => x.startsWith('✅')) ? 'success' : 'error');
+  showDeedSummary(deedData);
+  runRisk();
+}
+
+// 合併土地＋建物謄本：取得日取較近的（判斷短期交易）、謄本日取較舊的（判斷鮮度）、
+// 他項權利種類合併，金額取最大（同一筆抵押常同時設定在土地和建物，不重複相加）
+function mergeDeed(base, add) {
+  const keep = { acquire_date: base.acquire_date, acquire_reason: base.acquire_reason, holding_years: base.holding_years,
+    short_term: base.short_term, deed_date: base.deed_date, kinds: base.encumbrance_kinds || [], amount: base.encumbrance_amount };
+  Object.assign(base, add);
+  if (keep.acquire_date && (!add.acquire_date || keep.acquire_date > add.acquire_date)) {
+    base.acquire_date = keep.acquire_date; base.acquire_reason = keep.acquire_reason;
+    base.holding_years = keep.holding_years; base.short_term = keep.short_term;
+  }
+  if (keep.deed_date && (!add.deed_date || keep.deed_date < add.deed_date)) base.deed_date = keep.deed_date;
+  const kinds = [...new Set([...keep.kinds, ...(add.encumbrance_kinds || [])])];
+  if (kinds.length) base.encumbrance_kinds = kinds;
+  const amt = Math.max(keep.amount || 0, add.encumbrance_amount || 0);
+  if (amt) base.encumbrance_amount = amt;
+  return base;
+}
+
+function setSelectValue(id, v) {
+  const el = document.getElementById(id);
+  if (!el || v == null || v === '') return;
+  if (el.tagName === 'SELECT' && ![...el.options].some(o => o.value === String(v))) el.appendChild(new Option(v, v));
+  el.value = v;
+}
+
+function fillFromDeed(d) {
+  const plain = ['land_section', 'land_number', 'build_number', 'build_area_main', 'build_area_sub', 'build_area_pub',
+    'floor_above', 'floor_current', 'finish_year', 'finish_month', 'finish_day', 'land_area_all', 'land_area_share',
+    'land_share', 'land_value_per_sqm', 'land_price_per_sqm'];
+  plain.forEach(k => { if (d[k] != null) setVal(k, d[k]); });
+  setSelectValue('structure', d.structure);
+  setSelectValue('land_ownership', d.land_ownership);
+  if (d.land_zone_type) { setSelectValue('land_zone_type', d.land_zone_type); onZoneTypeChange(); }
+  setSelectValue('land_zone_name', d.land_zone_name);
+  setSelectValue('land_use_type', d.land_use_type);
+  calcTotal();
+  calcAge();
+}
+
+function showDeedSummary(d) {
+  const rows = [
+    ['建號', d.build_number],
+    ['地段地號', [d.land_section, d.land_number].filter(Boolean).join(' ')],
+    ['主建／附屬／公設（坪）', (d.build_area_main != null) ? [d.build_area_main, d.build_area_sub, d.build_area_pub].map(v => v ?? '─').join(' ／ ') : ''],
+    ['各層面積', (d.layers || []).map(l => `${l.floor} ${l.ping} 坪`).join('、')],
+    ['樓層', d.floor_current ? `${d.floor_current} 樓 / 共 ${d.floor_above ?? '─'} 層` : ''],
+    ['結構', d.structure],
+    ['完工', d.finish_year ? `民國 ${d.finish_year} 年 ${d.finish_month ?? '─'} 月（屋齡 ${d.age_years ?? '─'} 年）` : ''],
+    ['土地面積', d.land_area_all ? `${d.land_area_all} 坪（持分 ${d.land_area_share ?? '─'} 坪，${d.land_share || ''}）` : ''],
+    ['使用分區', [d.land_zone_type, d.land_zone_name, d.land_use_type].filter(Boolean).join('，')],
+    ['公告現值', d.land_value_per_sqm ? `${Number(d.land_value_per_sqm).toLocaleString()} 元/㎡` : ''],
+    ['取得日', d.acquire_date ? `${d.acquire_date} ${d.acquire_reason || ''}（持有約 ${d.holding_years} 年）` : ''],
+    ['他項權利', (d.encumbrance_kinds || []).join('、') + (d.encumbrance_amount ? `（擔保 ${Number(d.encumbrance_amount).toLocaleString()} 元）` : '')],
+    ['謄本查詢日', d.deed_date],
+  ].filter(([, v]) => v && String(v).trim());
+  const box = document.getElementById('tenement-result');
+  box.style.display = 'block';
+  box.innerHTML = '<h4>✅ 謄本解析結果</h4><table class="result-table">' +
+    rows.map(([k, v]) => `<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`).join('') + '</table>';
+}
+
+async function runRisk() {
+  const total = (numVal('build_area_main') || 0) + (numVal('build_area_sub') || 0) + (numVal('build_area_pub') || 0);
+  const deed = Object.assign({}, deedData, { build_area_total: total ? Math.round(total * 100) / 100 : null });
+  const fd = new FormData();
+  fd.append('deed_json', JSON.stringify(deed));
+  fd.append('form_json', JSON.stringify({ claimed_build_area_total: numVal('claimed_build_area_total'),
+    claimed_land_area_share: numVal('claimed_land_area_share') }));
+  try {
+    const r = await (await fetch('/api/risk', { method: 'POST', body: fd })).json();
+    const icon = { red: '🔴', yellow: '🟡', green: '🟢' };
+    document.getElementById('risk-box').innerHTML = `<b>${esc(r.summary)}</b><ul class="risk-list">` +
+      r.items.map(i => `<li class="risk-${i.level}">${icon[i.level]} <b>${esc(i.item)}</b>：${esc(i.msg)}</li>`).join('') + '</ul>';
+    setVal('risk_notes', r.text);
+  } catch (e) {
+    document.getElementById('risk-box').textContent = '風險檢查失敗：' + e.message;
+  }
+}
+
+async function lookupParcel() {
+  const county = val('land_county'), section = val('land_section'), number = val('land_number');
+  if (!county || !section || !number) {
+    setStatus('parcel-status', '請先填縣市、地段、地號（可以先按地址「自動查詢」或上傳謄本）', 'error');
+    return;
+  }
+  setStatus('parcel-status', '🔍 查詢國土測繪地籍圖中...', 'loading');
+  const fd = new FormData();
+  fd.append('county', county);
+  fd.append('section', section);
+  fd.append('number', number);
+  try {
+    const res = await fetch('/api/parcel', { method: 'POST', body: fd });
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.detail || res.status);
+    document.getElementById('parcel-map').style.display = 'block';
+    if (!parcelMap) {
+      parcelMap = L.map('parcel-map');
+      L.tileLayer('https://wmts.nlsc.gov.tw/wmts/EMAP/default/GoogleMapsCompatible/{z}/{y}/{x}', {
+        maxZoom: 19, attribution: '© 內政部國土測繪中心' }).addTo(parcelMap);
+    }
+    parcelMap.eachLayer(l => { if (l instanceof L.ImageOverlay) parcelMap.removeLayer(l); });
+    d.parts.forEach(p => L.imageOverlay('data:image/png;base64,' + p.image, [[p.ly, p.lx], [p.ry, p.rx]], { opacity: 0.85 }).addTo(parcelMap));
+    parcelMap.fitBounds([[d.ly, d.lx], [d.ry, d.rx]], { padding: [30, 30], maxZoom: 19 });
+    setTimeout(() => parcelMap.invalidateSize(), 50);
+    setIfEmpty('width', d.width_m);
+    setIfEmpty('depth', d.depth_m);
+    if (!val('land_area_all') && d.area_ping) setVal('land_area_all', d.area_ping);
+    setStatus('parcel-status', `✅ ${d.town} ${d.section} ${number} 地號：約 ${d.area_ping ?? '─'} 坪（圖面估算，正式以謄本為準），外框約 ${d.width_m} × ${d.depth_m} 公尺` +
+      (d.parts.length > 1 ? `，由 ${d.parts.length} 塊組成` : ''), 'success');
+  } catch (e) {
+    setStatus('parcel-status', `❌ ${e.message}`, 'error');
+  }
+}
+
+function previewPhotos() {
+  const box = document.getElementById('photo-preview');
+  box.innerHTML = '';
+  [...document.getElementById('site-photos').files].slice(0, 6).forEach(f => {
+    const img = document.createElement('img');
+    img.src = URL.createObjectURL(f);
+    img.style.cssText = 'height:80px;border-radius:6px';
+    img.alt = f.name;
+    box.appendChild(img);
+  });
 }
 
 // ─── 動態選單邏輯 ─────────────────────────────────────────────
@@ -432,6 +535,20 @@ function collectForm() {
     sell_points: val('sell_points'),
     notes: val('notes'),
     others: val('others'),
+    depth: numVal('depth'),
+    land_share: val('land_share'),
+    land_value_per_sqm: numVal('land_value_per_sqm'),
+    land_price_per_sqm: numVal('land_price_per_sqm'),
+    claimed_build_area_total: numVal('claimed_build_area_total'),
+    claimed_land_area_share: numVal('claimed_land_area_share'),
+    risk_notes: val('risk_notes'),
+    build_share: deedData.build_share || null,
+    acquire_date: deedData.acquire_date || null,
+    acquire_reason: deedData.acquire_reason || null,
+    holding_years: deedData.holding_years ?? null,
+    encumbrance_kinds: deedData.encumbrance_kinds || [],
+    encumbrance_amount: deedData.encumbrance_amount ?? null,
+    deed_date: deedData.deed_date || null,
   };
 }
 
@@ -445,6 +562,7 @@ async function generateExcel() {
   try {
     const fd = new FormData();
     fd.append('form_json', JSON.stringify(collectForm()));
+    [...document.getElementById('site-photos').files].slice(0, 6).forEach(f => fd.append('photos', f));
     const res = await fetch('/api/generate', { method: 'POST', body: fd });
     if (!res.ok) throw new Error(await res.text());
 

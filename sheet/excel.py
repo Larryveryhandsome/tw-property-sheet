@@ -73,8 +73,34 @@ def build_template(title: str = "物件調查表", subtitle: str = "") -> Workbo
     return wb
 
 
-def generate_excel(form, template_path: Path = None, title="物件調查表", subtitle="", today=None) -> bytes:
-    """回傳 xlsx bytes。有指定 template_path 就用它（版面要和 LAYOUT 一致）。"""
+def add_photos(wb, photos, max_px=900):
+    """照片放第二張工作表：每張縮到長邊 max_px，一列兩張，下方寫檔名。需要 Pillow。"""
+    from openpyxl.drawing.image import Image as XLImage
+    from PIL import Image, ImageOps
+    ws = wb.create_sheet("照片")
+    ws.column_dimensions["A"].width = ws.column_dimensions["B"].width = 62
+    row = 1
+    for i, (name, data) in enumerate(photos):
+        im = ImageOps.exif_transpose(Image.open(io.BytesIO(data))).convert("RGB")
+        im.thumbnail((max_px, max_px))
+        buf = io.BytesIO()
+        im.save(buf, "JPEG", quality=85)   # 重新存檔＝不帶原圖 EXIF（GPS、拍攝裝置）
+        buf.seek(0)
+        xl = XLImage(buf)
+        scale = 430 / max(xl.width, 1)      # 欄寬約 430 像素
+        xl.width, xl.height = int(xl.width * scale), int(xl.height * scale)
+        col = "A" if i % 2 == 0 else "B"
+        ws.add_image(xl, f"{col}{row}")
+        ws[f"{col}{row + 17}"] = name
+        if i % 2 == 1:
+            row += 19
+    for r in range(1, row + 19):
+        ws.row_dimensions[r].height = 18
+    return ws
+
+
+def generate_excel(form, template_path: Path = None, title="物件調查表", subtitle="", today=None, photos=None) -> bytes:
+    """回傳 xlsx bytes。有指定 template_path 就用它（版面要和 LAYOUT 一致）。photos：[(檔名, bytes)]。"""
     if template_path and Path(template_path).exists():
         wb = load_workbook(template_path)
     else:
@@ -91,6 +117,8 @@ def generate_excel(form, template_path: Path = None, title="物件調查表", su
         ws[cmap[key]].fill = YELLOW
     if hasattr(form, "missing_fields"):
         form.missing_fields = missing
+    if photos:
+        add_photos(wb, photos)
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()

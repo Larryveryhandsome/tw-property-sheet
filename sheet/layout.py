@@ -17,9 +17,10 @@ LAYOUT = [
     ("row", [("handover", "交屋"), ("visit", "帶看方式")]),
     ("row", [("source", "客戶來源"), ("sell_reason", "售屋動機")]),
     ("section", "土地"),
-    ("row", [("land_parcel", "段／地號"), ("land_ownership", "持分")]),
+    ("row", [("land_parcel", "段／地號"), ("land_share_text", "權利範圍")]),
     ("row", [("land_area_all", "土地坪數（全部）"), ("land_area_share", "土地坪數（持分）")]),
     ("wide", "land_use", "使用分區／編定"),
+    ("row", [("land_value_text", "公告土地現值"), ("land_price_text", "公告地價")]),
     ("row", [("vacant_ratio", "空地比"), ("land_dims", "臨路／面寬／深度（米）")]),
     ("section", "建物"),
     ("row", [("build_number", "建號"), ("main_use", "主要用途")]),
@@ -36,6 +37,10 @@ LAYOUT = [
     ("row", [("school_elem", "國小學區"), ("school_mid", "國中學區")]),
     ("row", [("nearby_park", "公園"), ("nearby_station", "車站")]),
     ("row", [("nearby_market", "市場"), ("others", "其他機能")]),
+    ("section", "產權與風險"),
+    ("row", [("acquire_text", "取得日／持有"), ("encumbrance_text", "他項權利")]),
+    ("row", [("build_share_text", "建物權利範圍"), ("deed_date", "謄本查詢日")]),
+    ("text", "risk_notes", "上架前風險提示", 60),
     ("section", "說明"),
     ("text", "sell_points", "銷售重點", 96),
     ("text", "notes", "注意事項", 60),
@@ -127,6 +132,20 @@ def derive(form, today=None) -> dict:
     out["parking_text"] = _join([f.get("parking"), f.get("parking_type"), f.get("parking_lane"),
                                  f.get("parking_reg"), f.get("parking_vehicle"),
                                  f.get("parking_no") and f"編號 {f['parking_no']}"], " ")
+    out["land_share_text"] = _join([f.get("land_ownership"), f.get("land_share")], " ")
+    sqm2ping = lambda v: f"{_n(v, 0):,} 元/㎡（約 {_n(float(v) * 3.305785 / 10000, 2)} 萬/坪）"
+    out["land_value_text"] = sqm2ping(f["land_value_per_sqm"]) if f.get("land_value_per_sqm") else None
+    out["land_price_text"] = sqm2ping(f["land_price_per_sqm"]) if f.get("land_price_per_sqm") else None
+    if f.get("acquire_date"):
+        out["acquire_text"] = _join([f["acquire_date"], f.get("acquire_reason"),
+                                     f.get("holding_years") is not None and f"持有約 {f['holding_years']} 年"], "　")
+    kinds = f.get("encumbrance_kinds") or []
+    if kinds:
+        amt = f.get("encumbrance_amount")
+        out["encumbrance_text"] = "、".join(kinds) + (f"（擔保約 {_n(float(amt) / 10000, 0):,} 萬）" if amt else "")
+    out["build_share_text"] = f.get("build_share")
+    out["deed_date"] = f.get("deed_date")
+    out["risk_notes"] = f.get("risk_notes")
     fee = f.get("mgmt_fee")
     out["mgmt_text"] = _join([f.get("management"),
                               fee not in (None, "") and f"{_n(fee)} 元" + (f"／{f['mgmt_period']}" if f.get("mgmt_period") else "")], " ")
