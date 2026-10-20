@@ -112,9 +112,23 @@ def cached(office, sect, landno8):
         return _read(CACHE, {}).get(cache_key(office, sect, landno8))
 
 
-def find_area(reg):
-    """標示部裡的面積（平方公尺）：欄位名含 AREA 的第一個數字。"""
+def area_field() -> str:
+    """要讀的面積欄位名稱。PSHEET_MOI_AREA_FIELD 留白＝自動找（欄位名稱含 AREA 的第一個數字）。"""
+    return os.getenv("PSHEET_MOI_AREA_FIELD", "").strip()
+
+
+def find_area(reg, field: str = None):
+    """標示部裡的面積（平方公尺）：有指定欄位就只看那個欄位，否則找欄位名含 AREA 的第一個數字。找不到回 None。"""
     if not isinstance(reg, dict):
+        return None
+    field = area_field() if field is None else field
+    if field:
+        for k, v in reg.items():
+            if str(k).upper() == field.upper():
+                try:
+                    return float(v)
+                except (TypeError, ValueError):
+                    return None
         return None
     for k, v in reg.items():
         if "AREA" in str(k).upper():
@@ -123,6 +137,31 @@ def find_area(reg):
             except (TypeError, ValueError):
                 continue
     return None
+
+
+def extract_area(reg) -> float:
+    """嚴格版：一定回正數面積，否則丟 MoiError（絕不默默回 0 或 None）。"""
+    if not isinstance(reg, dict) or not reg:
+        raise MoiError("平台查無這筆土地標示部（地段代碼或地號可能不對）")
+    field = area_field()
+    keys = ", ".join(sorted(str(k) for k in reg)[:20])
+    if field:
+        match = next((k for k in reg if str(k).upper() == field.upper()), None)
+        if match is None:
+            raise MoiError(f"核對失敗：找不到面積欄位「{field}」（平台回傳的欄位：{keys}）；請檢查 .env 的 PSHEET_MOI_AREA_FIELD")
+        cands = [match]
+    else:
+        cands = [k for k in reg if "AREA" in str(k).upper()]
+        if not cands:
+            raise MoiError(f"核對失敗：找不到面積欄位（平台回傳的欄位：{keys}）；可在 .env 設定 PSHEET_MOI_AREA_FIELD 指定欄位名稱")
+    for k in cands:
+        try:
+            v = float(str(reg[k]).replace(",", ""))
+        except (TypeError, ValueError):
+            continue
+        if v > 0 and v == v and v != float("inf"):
+            return v
+    raise MoiError(f"核對失敗：面積欄位「{cands[0]}」的值不是有效的正數（{reg.get(cands[0])!r}）")
 
 
 def get_token(client=None, sleep=time.sleep, force=False) -> str:
@@ -174,9 +213,7 @@ def query_land(office: str, sect: str, landno8: str, client=None, today: str = N
             raise MoiError(f"平台回覆錯誤 {d.get('CODE') or ''} {d.get('MESSAGE') or ''}".strip())
         resp = d.get("RESPONSE")
         reg = next((x.get("LANDREG") for x in resp if isinstance(x, dict)), None) if isinstance(resp, list) else None
-        area = find_area(reg)
-        if not area:
-            raise MoiError("平台查無這筆土地標示部（地段代碼或地號可能不對）")
+        area = extract_area(reg)
         out = {"area_sqm": area, "area_ping": round(area * 0.3025, 2), "raw": reg, "at": today_str()}
         c = _read(CACHE, {})
         c[cache_key(office, sect, landno8)] = out

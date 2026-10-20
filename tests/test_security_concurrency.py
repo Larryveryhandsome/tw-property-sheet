@@ -262,5 +262,88 @@ class ApiSecurityTest(unittest.TestCase):
                 moi.USAGE = saved
 
 
+class MoiAreaFieldTest(unittest.TestCase):
+    """面積欄位可設定；找不到或不是數字時要明確報錯，絕不默默回 0。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        d = Path(self.tmp.name)
+        self.saved = (moi.DATA, moi.CACHE, moi.USAGE, dict(os.environ))
+        moi.DATA, moi.CACHE, moi.USAGE = d, d / "c.json", d / "u.json"
+        moi._token.update(value=None, at=0)
+        os.environ.update(MOI_COP_CLIENT_ID="id", MOI_COP_SECRET="sec", MOI_DAILY_LIMIT="10")
+        os.environ.pop("PSHEET_MOI_AREA_FIELD", None)
+
+    def tearDown(self):
+        moi.DATA, moi.CACHE, moi.USAGE, env = self.saved
+        os.environ.clear()
+        os.environ.update(env)
+        moi._token.update(value=None, at=0)
+        self.tmp.cleanup()
+
+    def query(self, reg, no="01230000"):
+        def h(req):
+            if req.url.path.endswith("getToken"):
+                return httpx.Response(200, json={"access_token": "t"})
+            return httpx.Response(200, json={"STATUS": 1, "RESPONSE": [{"LANDREG": reg}]})
+        return moi.query_land("XA", "0101", no, client=httpx.Client(transport=httpx.MockTransport(h)),
+                              today="2026-10-20")
+
+    def test_default_auto_detect_area_field(self):
+        self.assertEqual(self.query({"ZONE": "住宅區", "LANDAREA": "330.5"})["area_sqm"], 330.5)
+
+    def test_custom_field_name(self):
+        os.environ["PSHEET_MOI_AREA_FIELD"] = "mj"
+        self.assertEqual(self.query({"LANDAREA": "1", "MJ": "250"}, "00010000")["area_sqm"], 250)
+
+    def test_custom_field_missing_is_clear_error(self):
+        os.environ["PSHEET_MOI_AREA_FIELD"] = "NOPE"
+        with self.assertRaises(moi.MoiError) as e:
+            self.query({"LANDAREA": "100"})
+        self.assertIn("核對失敗：找不到面積欄位", str(e.exception))
+        self.assertIn("NOPE", str(e.exception))
+
+    def test_no_area_field_is_clear_error_and_not_cached(self):
+        with self.assertRaises(moi.MoiError) as e:
+            self.query({"ZONE": "住宅區", "SIZE": "100"})
+        self.assertIn("核對失敗：找不到面積欄位", str(e.exception))
+        self.assertIn("ZONE", str(e.exception))          # 列出實際欄位名稱方便設定
+        self.assertIsNone(moi.cached("XA", "0101", "01230000"))
+
+    def test_non_numeric_or_zero_value_is_error_not_zero(self):
+        for v in ("abc", "", None, "0", "-5", "nan", "inf"):
+            with self.assertRaises(moi.MoiError, msg=repr(v)) as e:
+                self.query({"LANDAREA": v}, "00020000")
+            self.assertIn("核對失敗", str(e.exception))
+
+    def test_thousand_separator_ok(self):
+        self.assertEqual(self.query({"LANDAREA": "1,234.5"}, "00030000")["area_sqm"], 1234.5)
+
+    def test_api_returns_400_with_message_for_ui(self):
+        from fastapi.testclient import TestClient
+        import main
+        from services import parcel
+
+        async def fake_resolve(county, section, town=""):
+            return "XA", "0101", "西區", "示範段"
+        saved = parcel.resolve_section
+        parcel.resolve_section = fake_resolve
+        orig = httpx.Client
+
+        def h(req):
+            if req.url.path.endswith("getToken"):
+                return httpx.Response(200, json={"access_token": "t"})
+            return httpx.Response(200, json={"STATUS": 1, "RESPONSE": [{"LANDREG": {"ZONE": "x"}}]})
+        httpx.Client = lambda *a, **k: orig(transport=httpx.MockTransport(h))
+        try:
+            r = TestClient(main.app).post("/api/official-land", data={
+                "county": "示範市", "section": "示範段", "number": "123", "confirm": "1"})
+        finally:
+            parcel.resolve_section = saved
+            httpx.Client = orig
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("核對失敗：找不到面積欄位", r.json()["detail"])
+
+
 if __name__ == "__main__":
     unittest.main()
