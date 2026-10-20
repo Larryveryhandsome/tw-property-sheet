@@ -6,6 +6,7 @@
 
 公開服務可能改版、限流或暫停，查不到就留空，表單照樣可以手動填。
 """
+import asyncio
 import logging
 import math
 import os
@@ -21,6 +22,7 @@ OVERPASS_URLS = [u.strip() for u in os.getenv(
     "PSHEET_OVERPASS_URLS",
     "https://overpass-api.de/api/interpreter,https://overpass.private.coffee/api/interpreter,"
     "https://maps.mail.ru/osm/tools/overpass/api/interpreter").split(",") if u.strip()]
+NEARBY_BUDGET = float(os.getenv("PSHEET_NEARBY_BUDGET", "12"))  # 周邊查詢總共最多等幾秒
 UA = os.getenv("PSHEET_USER_AGENT", "tw-property-sheet/1.0 (+https://github.com/Larryveryhandsome/tw-property-sheet)")
 
 
@@ -120,16 +122,22 @@ node["shop"="supermarket"](around:{radius},{lat},{lon});
 node["leisure"="park"](around:{radius},{lat},{lon});
 way["leisure"="park"](around:{radius},{lat},{lon});
 );out center;"""
-    els = None
-    async with _client(12.0) as c:
-        for url in OVERPASS_URLS:  # 公開站台常限流，失敗就換下一個
-            try:
-                r = await c.post(url, data={"data": q})
-                r.raise_for_status()
-                els = r.json().get("elements", [])
-                break
-            except Exception as e:
-                log.warning("周邊查詢失敗（%s）：%s", url, e)
+    async def _try_all():
+        async with _client(8.0) as c:
+            for url in OVERPASS_URLS:  # 公開站台常限流，失敗就換下一個
+                try:
+                    r = await c.post(url, data={"data": q})
+                    r.raise_for_status()
+                    return r.json().get("elements", [])
+                except Exception as e:
+                    log.warning("周邊查詢失敗（%s）：%s", url, e)
+        return None
+
+    try:  # 公開站台不穩時不要讓使用者一直等，超過總時限就留空
+        els = await asyncio.wait_for(_try_all(), NEARBY_BUDGET)
+    except asyncio.TimeoutError:
+        log.warning("周邊查詢超過 %s 秒，先留空（可手動填）", NEARBY_BUDGET)
+        els = None
     if els is None:
         return {}
     for el in els:  # way 的座標在 center
