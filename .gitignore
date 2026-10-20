@@ -1,0 +1,5 @@
+.env
+data/
+*.xlsx
+__pycache__/
+.claude/

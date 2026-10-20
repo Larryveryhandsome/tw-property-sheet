@@ -1,0 +1,513 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>物調表產生器</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div id="app">
+  <header>
+    <div class="logo">🏠 物調表產生器</div>
+    <div class="store-name" id="brand-name">示範不動產</div>
+  </header>
+
+  <div class="steps-bar">
+    <div class="step active" data-step="1">① 基本資料</div>
+    <div class="step" data-step="2">② 物件資訊</div>
+    <div class="step" data-step="3">③ 坪數樓層</div>
+    <div class="step" data-step="4">④ 周邊資料</div>
+    <div class="step" data-step="5">⑤ 確認下載</div>
+  </div>
+
+  <div class="main-container">
+
+    <!-- STEP 1 -->
+    <div class="form-section active" id="step1">
+      <h2>📋 基本資料</h2>
+      <div class="card">
+        <h3>物件編號 <span class="required-star">*</span></h3>
+        <input type="text" id="case_number" placeholder="例：A-2026-001">
+      </div>
+
+      <div class="card">
+        <h3>地址/坐落 <span class="required-star">*</span></h3>
+        <div class="field-row">
+          <input type="text" id="address" placeholder="例：臺北市中正區示範路1號3樓　或　示範段123地號" style="flex:1">
+          <button class="btn-green" onclick="lookupAddress()" style="margin-left:8px">🔍 自動查詢</button>
+        </div>
+        <div id="address-status" class="status-msg"></div>
+      </div>
+
+      <div class="card">
+        <h3>銷售資訊</h3>
+        <div class="field-row-2">
+          <div class="field-group">
+            <label>總價（萬元）<span class="required-star">*</span></label>
+            <input type="number" id="total_price" placeholder="698">
+          </div>
+          <div class="field-group">
+            <label>案件型態 <span class="required-star">*</span></label>
+            <select id="case_type" onchange="onCaseTypeChange()"><option value="">請選擇</option></select>
+          </div>
+        </div>
+        <div class="field-row-3">
+          <div class="field-group">
+            <label>現況</label>
+            <select id="status"><option value="">請選擇</option></select>
+          </div>
+          <div class="field-group">
+            <label>現場曝光</label>
+            <select id="exposure"><option value="">請選擇</option></select>
+          </div>
+          <div class="field-group">
+            <label>履約保證</label>
+            <select id="escrow"><option value="">請選擇</option></select>
+          </div>
+        </div>
+        <div class="field-row-3">
+          <div class="field-group">
+            <label>交屋</label>
+            <select id="handover"><option value="">請選擇</option></select>
+          </div>
+          <div class="field-group">
+            <label>帶看方式</label>
+            <select id="visit_method" onchange="onVisitMethodChange()"><option value="">請選擇</option></select>
+          </div>
+          <div class="field-group">
+            <label>售屋動機</label>
+            <select id="sell_reason"><option value="">請選擇</option></select>
+          </div>
+        </div>
+        <div class="field-row" id="visit-extra" style="display:none">
+          <input type="text" id="visit_contact" placeholder="聯絡電話" style="display:none;flex:1">
+          <input type="text" id="visit_key_no" placeholder="鑰匙編號" style="display:none;flex:1">
+        </div>
+        <div class="field-row-2">
+          <div class="field-group">
+            <label>營業員</label>
+            <input type="text" id="agent" list="agent-list" placeholder="姓名"><datalist id="agent-list"></datalist>
+          </div>
+          <div class="field-group">
+            <label>貸款</label>
+            <select id="loan"><option value="">請選擇</option></select>
+          </div>
+        </div>
+      </div>
+
+      <div class="btn-row">
+        <button class="btn-green btn-big" onclick="goStep(2)">下一步 →</button>
+      </div>
+    </div>
+
+    <!-- STEP 2 -->
+    <div class="form-section" id="step2">
+      <h2>🏗️ 物件資訊</h2>
+
+      <div class="card">
+        <h3>建物謄本 <span class="hint">（上傳 PDF 自動解析）</span></h3>
+        <div class="upload-box" onclick="document.getElementById('tenement-file').click()">
+          <input type="file" id="tenement-file" accept=".pdf" hidden>
+          <div>📑 點此上傳建物謄本 PDF → 自動填入坪數/樓層/屋齡</div>
+        </div>
+        <button class="btn-small" onclick="parseTenement()" style="margin-top:8px">⚙️ 解析謄本</button>
+        <div id="tenement-status" class="status-msg"></div>
+        <div id="tenement-result" class="auto-result-box" style="display:none"></div>
+      </div>
+
+      <div class="card">
+        <h3>土地資訊</h3>
+        <div class="field-row-3">
+          <div class="field-group">
+            <label>地段</label>
+            <input type="text" id="land_section" placeholder="示範段">
+          </div>
+          <div class="field-group">
+            <label>地號</label>
+            <input type="text" id="land_number" placeholder="0123-0000">
+          </div>
+          <div class="field-group">
+            <label>建號</label>
+            <input type="text" id="build_number" placeholder="00123-000">
+          </div>
+        </div>
+        <div class="field-row-3">
+          <div class="field-group">
+            <label>土地持分</label>
+            <select id="land_ownership">
+              <option value="">請選擇</option>
+              <option>全部</option><option>持分</option><option>含道路</option>
+            </select>
+          </div>
+          <div class="field-group">
+            <label>全部坪數</label>
+            <input type="number" id="land_area_all" step="0.01" placeholder="坪">
+          </div>
+          <div class="field-group">
+            <label>持分坪數</label>
+            <input type="number" id="land_area_share" step="0.01" placeholder="坪">
+          </div>
+        </div>
+
+        <h3 style="margin-top:12px">土地屬性（國土測繪）</h3>
+        <div class="field-row" style="margin-bottom:8px">
+          <button class="btn-small" onclick="openNLSC()">🗺️ 開啟國土測繪查詢</button>
+          <span class="hint" style="margin-left:8px">查完後選擇下方選項</span>
+        </div>
+        <div class="field-row-3">
+          <div class="field-group">
+            <label>都計內/外</label>
+            <select id="land_zone_type" onchange="onZoneTypeChange()">
+              <option value="">請選擇</option>
+              <option>都計內</option><option>都計外</option>
+            </select>
+          </div>
+          <div class="field-group">
+            <label>分區名稱</label>
+            <select id="land_zone_name"><option value="">請選擇</option></select>
+          </div>
+          <div class="field-group" id="land_use_type_group" style="display:none">
+            <label>使用地類別</label>
+            <select id="land_use_type"><option value="">請選擇</option></select>
+          </div>
+        </div>
+
+        <!-- 透天/別墅/農舍才需要 -->
+        <div id="land-dimensions" style="display:none">
+          <div class="field-row-3" style="margin-top:8px">
+            <div class="field-group">
+              <label>空地比</label>
+              <select id="vacant_ratio">
+                <option value="">請選擇</option>
+                <option>0%</option><option>10%</option><option>20%</option>
+                <option>30%</option><option>40%</option><option>50%以上</option>
+              </select>
+            </div>
+            <div class="field-group">
+              <label>臨路（米）</label>
+              <input type="number" id="road_frontage" step="0.1">
+            </div>
+            <div class="field-group">
+              <label>面寬（米）</label>
+              <input type="number" id="width" step="0.1">
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>外觀與結構</h3>
+        <div class="field-row" style="margin-bottom:8px">
+          <button class="btn-small" onclick="openStreetView()">📷 Google 街景判斷外觀</button>
+        </div>
+        <div class="field-row-3">
+          <div class="field-group">
+            <label>外觀</label>
+            <select id="appearance"><option value="">請選擇</option></select>
+          </div>
+          <div class="field-group">
+            <label>結構</label>
+            <select id="structure"><option value="">請選擇</option></select>
+          </div>
+          <div class="field-group">
+            <label>加建</label>
+            <select id="addon_type"><option value="">請選擇</option></select>
+          </div>
+        </div>
+        <div class="field-row-2">
+          <div class="field-group">
+            <label>邊間</label>
+            <select id="is_corner">
+              <option value="">請選擇</option>
+              <option>邊間</option><option>非邊間</option>
+            </select>
+          </div>
+          <div class="field-group">
+            <label>有無中庭</label>
+            <select id="has_courtyard">
+              <option value="">請選擇</option>
+              <option>有中庭</option><option>無中庭</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div class="btn-row">
+        <button class="btn-gray" onclick="goStep(1)">← 上一步</button>
+        <button class="btn-green btn-big" onclick="goStep(3)">下一步 →</button>
+      </div>
+    </div>
+
+    <!-- STEP 3 -->
+    <div class="form-section" id="step3">
+      <h2>📐 坪數與樓層</h2>
+
+      <div class="card">
+        <h3>建物坪數（來自謄本）</h3>
+        <div class="field-row-3">
+          <div class="field-group">
+            <label>主建坪 <span class="required-star">*</span></label>
+            <input type="number" id="build_area_main" step="0.01" placeholder="7.88" oninput="calcTotal()">
+          </div>
+          <div class="field-group">
+            <label>附屬坪（陽台等）</label>
+            <input type="number" id="build_area_sub" step="0.01" placeholder="0.82" oninput="calcTotal()">
+          </div>
+          <div class="field-group">
+            <label>公設坪</label>
+            <input type="number" id="build_area_pub" step="0.01" placeholder="5.99" oninput="calcTotal()">
+          </div>
+        </div>
+        <div class="total-box" id="total-area-display">總建坪：－</div>
+      </div>
+
+      <div class="card">
+        <h3>樓層</h3>
+        <div class="field-row-3">
+          <div class="field-group">
+            <label>所在樓層 <span class="required-star">*</span></label>
+            <input type="number" id="floor_current" min="1" max="99">
+          </div>
+          <div class="field-group">
+            <label>地上樓層數</label>
+            <input type="number" id="floor_above" min="1" max="99">
+          </div>
+          <div class="field-group">
+            <label>地下樓層數</label>
+            <input type="number" id="floor_below" min="0" max="10" placeholder="0">
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>完工日期 <span class="hint">（民國年，來自謄本）</span></h3>
+        <div class="field-row">
+          <div class="field-group" style="width:120px">
+            <label>民國年</label>
+            <input type="number" id="finish_year" min="40" max="120" placeholder="84" oninput="calcAge()">
+          </div>
+          <div class="field-group" style="width:90px">
+            <label>月</label>
+            <input type="number" id="finish_month" min="1" max="12" oninput="calcAge()">
+          </div>
+          <div class="field-group" style="width:90px">
+            <label>日</label>
+            <input type="number" id="finish_day" min="1" max="31" oninput="calcAge()">
+          </div>
+          <div style="display:flex;align-items:flex-end;padding-bottom:4px">
+            <div class="age-badge" id="age-display">屋齡：－</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>格局 <span class="required-star">*</span></h3>
+        <div class="field-row-3">
+          <div class="field-group">
+            <label>房</label>
+            <select id="room_count">
+              <option value="">請選擇</option>
+              <option>1</option><option>2</option><option>3</option>
+              <option>4</option><option>5</option><option>6</option>
+            </select>
+          </div>
+          <div class="field-group">
+            <label>廳</label>
+            <select id="hall_count">
+              <option value="">請選擇</option>
+              <option>1</option><option>2</option><option>3</option>
+            </select>
+          </div>
+          <div class="field-group">
+            <label>衛</label>
+            <select id="bath_count">
+              <option value="">請選擇</option>
+              <option>1</option><option>2</option><option>3</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>方位朝向</h3>
+        <div class="field-row-3">
+          <div class="field-group">
+            <label>建物朝向</label>
+            <select id="orientation_build"><option value="">請選擇</option></select>
+          </div>
+          <div class="field-group">
+            <label>落地窗朝向</label>
+            <select id="orientation_window"><option value="">不適用</option></select>
+          </div>
+          <div class="field-group">
+            <label>大門朝向</label>
+            <select id="orientation_door"><option value="">請選擇</option></select>
+          </div>
+        </div>
+      </div>
+
+      <div class="btn-row">
+        <button class="btn-gray" onclick="goStep(2)">← 上一步</button>
+        <button class="btn-green btn-big" onclick="goStep(4)">下一步 →</button>
+      </div>
+    </div>
+
+    <!-- STEP 4 -->
+    <div class="form-section" id="step4">
+      <h2>🏫 周邊資料</h2>
+
+      <div class="card">
+        <h3>學區 <span class="hint">（依所在村里查詢）</span></h3>
+        <div class="field-row-3">
+          <div class="field-group">
+            <label>所在村里</label>
+            <input type="text" id="village" placeholder="例：示範里">
+          </div>
+          <div class="field-group">
+            <label>國小學區</label>
+            <input type="text" id="school_elem" placeholder="例：示範國小">
+          </div>
+          <div class="field-group">
+            <label>國中學區</label>
+            <input type="text" id="school_mid" placeholder="例：示範國中">
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>周邊機能</h3>
+        <div class="field-row-3">
+          <div class="field-group">
+            <label>最近公園</label>
+            <input type="text" id="nearby_park" list="nearby_park-list" placeholder="自動查詢或自行輸入"><datalist id="nearby_park-list"></datalist>
+          </div>
+          <div class="field-group">
+            <label>最近車站</label>
+            <input type="text" id="nearby_station" list="nearby_station-list" placeholder="自動查詢或自行輸入"><datalist id="nearby_station-list"></datalist>
+          </div>
+          <div class="field-group">
+            <label>最近市場</label>
+            <input type="text" id="nearby_market" list="nearby_market-list" placeholder="自動查詢或自行輸入"><datalist id="nearby_market-list"></datalist>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>車位</h3>
+        <div class="field-row-3">
+          <div class="field-group">
+            <label>車位</label>
+            <select id="parking" onchange="onParkingChange()">
+              <option value="">請選擇</option>
+            </select>
+          </div>
+          <div class="field-group" id="parking-type-group" style="display:none">
+            <label>車位類型</label>
+            <select id="parking_type"><option value="">請選擇</option></select>
+          </div>
+          <div class="field-group" id="parking-lane-group" style="display:none">
+            <label>車道類型</label>
+            <select id="parking_lane"><option value="">請選擇</option></select>
+          </div>
+        </div>
+        <div class="field-row-3" id="parking-detail" style="display:none">
+          <div class="field-group">
+            <label>車位編號</label>
+            <input type="text" id="parking_no">
+          </div>
+          <div class="field-group">
+            <label>登記類型</label>
+            <select id="parking_reg"><option value="">請選擇</option></select>
+          </div>
+          <div class="field-group">
+            <label>車種</label>
+            <select id="parking_vehicle"><option value="">請選擇</option></select>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>管理方式</h3>
+        <div class="field-row-3">
+          <div class="field-group">
+            <label>管理方式</label>
+            <select id="management" onchange="onManagementChange()">
+              <option value="">請選擇</option>
+            </select>
+          </div>
+          <div class="field-group" id="mgmt-fee-group" style="display:none">
+            <label>管理費（元）</label>
+            <input type="number" id="mgmt_fee">
+          </div>
+          <div class="field-group" id="mgmt-period-group" style="display:none">
+            <label>繳費頻率</label>
+            <select id="mgmt_period"><option value="">請選擇</option></select>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>其他</h3>
+        <div class="field-row-2">
+          <div class="field-group">
+            <label>水電</label>
+            <select id="utilities"><option value="">請選擇</option></select>
+          </div>
+        </div>
+        <div class="field-group">
+          <label>其他機能說明</label>
+          <textarea id="others" rows="2" placeholder="可補充說明..."></textarea>
+        </div>
+      </div>
+
+      <div class="card">
+        <label>注意事項（業務填寫）</label>
+        <textarea id="notes" rows="3" placeholder="特殊情況或注意事項..."></textarea>
+      </div>
+
+      <div class="btn-row">
+        <button class="btn-gray" onclick="goStep(3)">← 上一步</button>
+        <button class="btn-green btn-big" onclick="goStep(5)">預覽確認 →</button>
+      </div>
+    </div>
+
+    <!-- STEP 5 -->
+    <div class="form-section" id="step5">
+      <h2>✅ 確認與下載</h2>
+
+      <div id="preview-box" class="preview-box"></div>
+
+      <div class="card">
+        <h3>🤖 AI 生成</h3>
+        <div class="field-group">
+          <label>案名</label>
+          <div style="display:flex;gap:8px">
+            <input type="text" id="case_name" placeholder="AI自動生成，可修改" style="flex:1">
+            <button class="btn-small" onclick="regenName()">🔄 重生</button>
+          </div>
+        </div>
+        <div class="field-group" style="margin-top:12px">
+          <label>銷售重點</label>
+          <textarea id="sell_points" rows="6" placeholder="AI自動生成，可修改"></textarea>
+          <button class="btn-small" onclick="regenSellPoints()" style="margin-top:4px">🔄 重生</button>
+        </div>
+      </div>
+
+      <div id="generate-status" class="status-msg"></div>
+      <p class="hint">黃底＝必填但還沒填的欄位。自動查詢的資料來自公開服務，原則上僅供參考，請以登記資料與現場確認為準。</p>
+
+      <div class="btn-row">
+        <button class="btn-gray" onclick="goStep(4)">← 修改</button>
+        <button class="btn-green btn-big" id="download-btn" onclick="generateExcel()">
+          📥 產生並下載物調表 Excel
+        </button>
+      </div>
+    </div>
+
+  </div><!-- main-container -->
+</div><!-- app -->
+
+<script src="/static/app.js"></script>
+</body>
+</html>
