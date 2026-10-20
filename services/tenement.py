@@ -253,16 +253,27 @@ def parse_land_text(text: str, today: date = None) -> dict:
     return r
 
 
+MAX_PAGES = 40   # 謄本通常不到 10 頁；頁數異常多的檔案不處理
+
+
+class PdfTooLarge(ValueError):
+    pass
+
+
 def pdf_text(pdf_bytes: bytes) -> str:
     """先用 PyMuPDF（文字順序較穩），沒裝就用 pdfplumber。"""
     try:
         import fitz
-        with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
-            return "".join(p.get_text() for p in doc)
     except ImportError:
         import pdfplumber
         with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+            if len(pdf.pages) > MAX_PAGES:
+                raise PdfTooLarge(f"PDF 頁數太多（上限 {MAX_PAGES} 頁）")
             return "\n".join(p.extract_text() or "" for p in pdf.pages)
+    with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
+        if doc.page_count > MAX_PAGES:
+            raise PdfTooLarge(f"PDF 頁數太多（上限 {MAX_PAGES} 頁）")
+        return "".join(p.get_text() for p in doc)
 
 
 def parse_pdf(pdf_bytes: bytes, today: date = None) -> dict:

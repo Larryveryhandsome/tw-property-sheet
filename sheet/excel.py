@@ -18,6 +18,14 @@ BOX = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
 WRAP = Alignment(vertical="center", wrap_text=True)
 
 
+def safe_set(ws, ref, v):
+    """寫入儲存格。開頭是 = + - @ 的文字一律當純文字（防 Excel 公式注入：資料可能來自表單、謄本或 OSM 地名）。"""
+    ws[ref] = v
+    if isinstance(v, str) and v[:1] in ("=", "+", "-", "@", "\t", "\r"):
+        ws[ref].data_type = "s"
+        ws[ref].quotePrefix = True
+
+
 def build_template(title: str = "物件調查表", subtitle: str = "") -> Workbook:
     wb = Workbook()
     ws = wb.active
@@ -91,7 +99,7 @@ def add_photos(wb, photos, max_px=900):
         xl.width, xl.height = int(xl.width * scale), int(xl.height * scale)
         col = "A" if i % 2 == 0 else "B"
         ws.add_image(xl, f"{col}{row}")
-        ws[f"{col}{row + 17}"] = name
+        safe_set(ws, f"{col}{row + 17}", name)
         if i % 2 == 1:
             row += 19
     for r in range(1, row + 19):
@@ -111,7 +119,7 @@ def generate_excel(form, template_path: Path = None, title="物件調查表", su
     for key, ref in cmap.items():
         v = values.get(key)
         if v not in (None, ""):
-            ws[ref] = v
+            safe_set(ws, ref, v)
     missing = missing_required(values)
     for key in missing:
         ws[cmap[key]].fill = YELLOW

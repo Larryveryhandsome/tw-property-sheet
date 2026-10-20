@@ -12,8 +12,9 @@
 import base64
 import json
 import os
+import threading
 import time
-from datetime import date
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
@@ -24,6 +25,15 @@ DATA = Path(__file__).resolve().parents[1] / "data"
 CACHE = DATA / "moi_cache.json"
 USAGE = DATA / "moi_usage.json"
 _token = {"value": None, "at": 0.0}
+# 付費查詢的臨界區：檢查快取 → 檢查每日上限 → 預先記一筆 → 送出 → 寫快取，整段一次只讓一個執行緒進來。
+# 這樣多位經紀人同時按（或同一筆被連按）時，不會重複扣款、也不會衝破每日上限。
+# 注意：這是「單一程序」的鎖；請不要用 uvicorn --workers N 多程序跑（見 README）。
+_lock = threading.RLock()
+TZ = timezone(timedelta(hours=8))   # 每日上限以台灣時間（Asia/Taipei）換日，不受伺服器時區影響
+
+
+def today_str() -> str:
+    return datetime.now(TZ).date().isoformat()
 
 
 class MoiError(RuntimeError):
@@ -46,27 +56,51 @@ def daily_limit() -> int:
         return 20
 
 
-def _read(path, default):
+def _read(path, default, strict=False):
+    """讀 JSON 檔。檔案不存在回 default；檔案壞掉時：strict=True 直接擋下（用量檔，寧可不查也不能歸零），
+    否則把壞檔改名保留（.bad）再當空的，不會靜默覆蓋掉。"""
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return default
+    except OSError as e:
+        if strict:
+            raise MoiError(f"讀不到 {path.name}（{type(e).__name__}），為避免重複扣款先停止查詢")
+        return default
+    try:
+        data = json.loads(text)
+        if isinstance(data, dict):
+            return data
+        raise ValueError("not a dict")
+    except ValueError:
+        if strict:
+            raise MoiError(f"{path.name} 內容損毀，為避免用量歸零後重複扣款，已停止查詢；請檢查或刪除該檔後重試")
+        try:
+            os.replace(path, path.with_name(path.name + f".bad{int(time.time())}"))
+        except OSError:
+            pass
         return default
 
 
 def _write(path, data):
+    """原子寫入：先寫暫存檔再 os.replace，當機或同時讀取都不會看到寫一半的檔。"""
     DATA.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+    os.replace(tmp, path)
 
 
 def used_today(today: str = None) -> int:
-    return _read(USAGE, {}).get(today or date.today().isoformat(), 0)
+    with _lock:
+        return _read(USAGE, {}, strict=True).get(today or today_str(), 0)
 
 
-def _count(today: str = None):
-    u = _read(USAGE, {})
-    k = today or date.today().isoformat()
-    u[k] = u.get(k, 0) + 1
-    _write(USAGE, {d: n for d, n in u.items() if d >= k[:7]})   # 只留本月
+def _count(today: str = None, delta: int = 1):
+    with _lock:
+        u = _read(USAGE, {}, strict=True)
+        k = today or today_str()
+        u[k] = max(0, u.get(k, 0) + delta)
+        _write(USAGE, {d: n for d, n in u.items() if d >= k[:7]})   # 只留本月
 
 
 def cache_key(office, sect, landno8):
@@ -74,7 +108,8 @@ def cache_key(office, sect, landno8):
 
 
 def cached(office, sect, landno8):
-    return _read(CACHE, {}).get(cache_key(office, sect, landno8))
+    with _lock:
+        return _read(CACHE, {}).get(cache_key(office, sect, landno8))
 
 
 def find_area(reg):
@@ -90,10 +125,16 @@ def find_area(reg):
     return None
 
 
-def get_token(client=None, sleep=time.sleep) -> str:
-    """換 access token（快取 10 分鐘）。平台同時發太多 token 會拒絕，失敗就等一下重試。"""
-    if _token["value"] and time.time() - _token["at"] < 600:
+def get_token(client=None, sleep=time.sleep, force=False) -> str:
+    """換 access token（快取 10 分鐘；force=True 略過快取）。平台同時發太多 token 會拒絕，失敗就等一下重試。"""
+    with _lock:
+        return _get_token(client, sleep, force)
+
+
+def _get_token(client, sleep, force) -> str:
+    if not force and _token["value"] and time.time() - _token["at"] < 600:
         return _token["value"]
+    _token.update(value=None, at=0.0)
     cid, sec = credentials()
     if not (cid and sec):
         raise MoiError("還沒設定地政平台金鑰（MOI_COP_CLIENT_ID／MOI_COP_SECRET），見 docs/金鑰申請.md")
@@ -113,32 +154,53 @@ def get_token(client=None, sleep=time.sleep) -> str:
 
 
 def query_land(office: str, sect: str, landno8: str, client=None, today: str = None) -> dict:
-    """查一筆土地標示部。回 {"area_sqm", "area_ping", "raw", "cached"}。"""
-    hit = cached(office, sect, landno8)
-    if hit:
-        return {**hit, "cached": True}
-    if used_today(today) >= daily_limit():
-        raise MoiError(f"今天已查 {used_today(today)} 筆，達到每日上限 {daily_limit()}（可在 .env 調整 MOI_DAILY_LIMIT）")
-    client = client or httpx.Client(timeout=25)
-    tok = get_token(client)
-    r = client.post(f"{COP}/cp/api/{LAND_SERVICE}", headers={"Authorization": "Bearer " + tok},
-                    json=[{"UNIT": office, "SEC": sect, "NO": landno8}])
-    _count(today)   # 有送出就算一次（平台可能已計費）
-    try:
-        d = r.json()
-    except ValueError:
-        raise MoiError(f"平台回應看不懂（HTTP {r.status_code}）")
-    if d.get("STATUS") != 1:
-        raise MoiError(f"平台回覆錯誤 {d.get('CODE') or ''} {d.get('MESSAGE') or ''}".strip())
-    reg = next((x.get("LANDREG") for x in d.get("RESPONSE") or [] if isinstance(x, dict)), None)
-    area = find_area(reg)
-    if not area:
-        raise MoiError("平台查無這筆土地標示部（地段代碼或地號可能不對）")
-    out = {"area_sqm": area, "area_ping": round(area * 0.3025, 2), "raw": reg, "at": date.today().isoformat()}
-    c = _read(CACHE, {})
-    c[cache_key(office, sect, landno8)] = out
-    _write(CACHE, c)
-    return {**out, "cached": False}
+    """查一筆土地標示部。回 {"area_sqm", "area_ping", "raw", "cached"}。
+    整段在鎖內執行：同一筆併發只會送出（收費）一次，每日上限在併發下也守得住。"""
+    with _lock:
+        hit = cached(office, sect, landno8)
+        if hit:
+            return {**hit, "cached": True}
+        used = used_today(today)
+        if used >= daily_limit():
+            raise MoiError(f"今天已查 {used} 筆，達到每日上限 {daily_limit()}（可在 .env 調整 MOI_DAILY_LIMIT）")
+        client = client or httpx.Client(timeout=25)
+        r = _paid_post(client, office, sect, landno8, today)
+        try:
+            d = r.json()
+        except ValueError:
+            raise MoiError(f"平台回應看不懂（HTTP {r.status_code}）")
+        if not isinstance(d, dict) or d.get("STATUS") != 1:
+            d = d if isinstance(d, dict) else {}
+            raise MoiError(f"平台回覆錯誤 {d.get('CODE') or ''} {d.get('MESSAGE') or ''}".strip())
+        resp = d.get("RESPONSE")
+        reg = next((x.get("LANDREG") for x in resp if isinstance(x, dict)), None) if isinstance(resp, list) else None
+        area = find_area(reg)
+        if not area:
+            raise MoiError("平台查無這筆土地標示部（地段代碼或地號可能不對）")
+        out = {"area_sqm": area, "area_ping": round(area * 0.3025, 2), "raw": reg, "at": today_str()}
+        c = _read(CACHE, {})
+        c[cache_key(office, sect, landno8)] = out
+        _write(CACHE, c)
+        return {**out, "cached": False}
+
+
+def _paid_post(client, office, sect, landno8, today):
+    """送出付費查詢。先記帳再送（送出後即使逾時，平台也可能已計費，所以不能事後才記）。
+    token 過期（401/403）時換新 token 重送一次：被拒絕的那次沒有查詢、不計費，所以把記帳還回去。"""
+    body = [{"UNIT": office, "SEC": sect, "NO": landno8}]
+    for attempt in range(2):
+        tok = get_token(client, force=attempt > 0)
+        _count(today)
+        try:
+            r = client.post(f"{COP}/cp/api/{LAND_SERVICE}", headers={"Authorization": "Bearer " + tok}, json=body)
+        except httpx.HTTPError as e:
+            raise MoiError(f"連不上地政平台（{type(e).__name__}）；這次可能已被計費，請先看平台用量再重試")
+        if r.status_code in (401, 403) and attempt == 0:
+            _count(today, -1)
+            _token.update(value=None, at=0.0)
+            continue
+        return r
+    return r
 
 
 def compare(official_ping: float, other_ping) -> dict:

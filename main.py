@@ -2,6 +2,7 @@
 
 啟動：python main.py（Windows 背景執行請雙擊「背景啟動.vbs」）然後開 http://localhost:8000
 """
+import asyncio
 import io
 import json
 import logging
@@ -9,6 +10,7 @@ import os
 import sys
 from datetime import date
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 from typing import List
 from urllib.parse import quote
 
@@ -38,6 +40,25 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(na
 BRAND = os.getenv("PSHEET_BRAND", "示範不動產")
 TEMPLATE = os.getenv("PSHEET_TEMPLATE", "")  # 自訂範本（版面要和 sheet/layout.py 一致），空白＝用內建
 MAX_PDF = 15 * 1024 * 1024
+PDF_TIMEOUT = float(os.getenv("PSHEET_PDF_TIMEOUT", "40"))   # 解析一份謄本最多等幾秒
+# 解析 PDF／產生 Excel 是 CPU 密集工作：丟到專用執行緒池，不卡住其他經紀人的請求，也限制同時進行的數量
+_heavy = ThreadPoolExecutor(max_workers=int(os.getenv("PSHEET_HEAVY_WORKERS", "3")), thread_name_prefix="heavy")
+
+
+async def read_limited(f: UploadFile, limit: int):
+    """最多讀 limit+1 位元組；超過回 None，不會把超大檔案整個讀進記憶體。"""
+    data = await f.read(limit + 1)
+    return None if len(data) > limit else data
+
+
+def parse_json(text: str, what: str = "表單") -> dict:
+    try:
+        d = json.loads(text or "{}")
+    except ValueError:
+        raise HTTPException(400, f"{what} 格式錯誤")
+    if not isinstance(d, dict):
+        raise HTTPException(400, f"{what} 格式錯誤")
+    return d
 
 app = FastAPI(title="tw-property-sheet 物調表產生器")
 app.mount("/static", StaticFiles(directory=str(BASE / "static")), name="static")
@@ -55,8 +76,12 @@ async def health():
 
 @app.get("/api/settings")
 async def settings():
+    try:
+        used = moi.used_today()
+    except moi.MoiError:
+        used = None
     return {"brand": BRAND, "ai": ai.enabled(), "moi": moi.enabled(),
-            "moi_used_today": moi.used_today(), "moi_daily_limit": moi.daily_limit()}
+            "moi_used_today": used, "moi_daily_limit": moi.daily_limit()}
 
 
 @app.get("/api/dropdown-options")
@@ -85,12 +110,21 @@ async def lookup_address(address: str = Form(...)):
 
 @app.post("/api/parse-tenement")
 async def parse_tenement(file: UploadFile = File(...)):
-    data = await file.read()
+    data = await read_limited(file, MAX_PDF)
+    if data is None:
+        raise HTTPException(400, "檔案太大（上限 15MB）")
     if not data.startswith(b"%PDF"):
         raise HTTPException(400, "請上傳 PDF 檔")
-    if len(data) > MAX_PDF:
-        raise HTTPException(400, "檔案太大（上限 15MB）")
-    return tenement.parse_pdf(data)
+    loop = asyncio.get_running_loop()
+    try:
+        return await asyncio.wait_for(loop.run_in_executor(_heavy, tenement.parse_pdf, data), PDF_TIMEOUT)
+    except asyncio.TimeoutError:
+        raise HTTPException(504, "謄本解析逾時，請換一份較小或較單純的 PDF")
+    except tenement.PdfTooLarge as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:   # 壞掉／惡意的 PDF：不要把內部訊息丟給前端
+        logging.getLogger("main").warning("謄本解析失敗：%s", type(e).__name__)
+        raise HTTPException(400, "這份 PDF 讀不了（可能損毀或加密）")
 
 
 @app.post("/api/parcel")
@@ -119,8 +153,8 @@ async def official_land(county: str = Form(...), section: str = Form(...), numbe
     if not hit and confirm != "1":
         raise HTTPException(409, "這筆會向地政平台查詢並收費，請確認後再按一次")
     try:
-        import asyncio
         r = hit and {**hit, "cached": True} or await asyncio.to_thread(moi.query_land, office, sect, no8)
+        used = moi.used_today()
     except moi.MoiError as e:
         raise HTTPException(400, str(e))
     try:
@@ -128,23 +162,23 @@ async def official_land(county: str = Form(...), section: str = Form(...), numbe
     except ValueError:
         cmp_val = None
     return {**r, "town": town, "section": sname, "number": number, "compare": moi.compare(r["area_ping"], cmp_val),
-            "used_today": moi.used_today(), "daily_limit": moi.daily_limit()}
+            "used_today": used, "daily_limit": moi.daily_limit()}
 
 
 @app.post("/api/risk")
 async def risk_check(deed_json: str = Form("{}"), form_json: str = Form("{}")):
-    items = risk.check(json.loads(deed_json), json.loads(form_json))
+    items = risk.check(parse_json(deed_json, "謄本資料"), parse_json(form_json))
     return {"summary": risk.summary(items), "items": items, "text": risk.text_for_sheet(items)}
 
 
 @app.post("/api/generate-name")
 async def gen_name(form_json: str = Form(...)):
-    return {"case_name": ai.case_name(json.loads(form_json))}
+    return {"case_name": ai.case_name(parse_json(form_json))}
 
 
 @app.post("/api/generate-sell-points")
 async def gen_points(form_json: str = Form(...)):
-    return {"sell_points": ai.sell_points(json.loads(form_json))}
+    return {"sell_points": ai.sell_points(parse_json(form_json))}
 
 
 MAX_PHOTOS, MAX_PHOTO = 6, 15 * 1024 * 1024
@@ -153,18 +187,21 @@ MAX_PHOTOS, MAX_PHOTO = 6, 15 * 1024 * 1024
 @app.post("/api/generate")
 async def generate(form_json: str = Form(...), photos: List[UploadFile] = File(default=[])):
     try:
-        form = PropertyForm(**json.loads(form_json))
+        form = PropertyForm(**parse_json(form_json))
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(400, f"表單錯誤：{e}")
     form.date_today = form.date_today or date.today().isoformat()
     pics = []
     for f in (photos or [])[:MAX_PHOTOS]:
-        data = await f.read()
-        if data and len(data) <= MAX_PHOTO:
+        data = await read_limited(f, MAX_PHOTO)
+        if data:
             pics.append((f.filename or "照片", data))
     try:
-        xlsx = generate_excel(form, Path(TEMPLATE) if TEMPLATE else None,
-                              title="物件調查表", subtitle=BRAND, photos=pics)
+        loop = asyncio.get_running_loop()
+        xlsx = await loop.run_in_executor(_heavy, lambda: generate_excel(
+            form, Path(TEMPLATE) if TEMPLATE else None, title="物件調查表", subtitle=BRAND, photos=pics))
     except Exception as e:  # 壞掉的圖片檔
         raise HTTPException(400, f"照片讀不了：{type(e).__name__}")
     name = f"物調表_{(form.address or form.case_number or '未命名')[:20]}.xlsx".replace("/", "_")
@@ -177,6 +214,10 @@ async def generate(form_json: str = Form(...), photos: List[UploadFile] = File(d
 if __name__ == "__main__":
     import uvicorn
     host, port = os.getenv("PSHEET_HOST", "127.0.0.1"), int(os.getenv("PSHEET_PORT", "8000"))
+    if host not in ("127.0.0.1", "localhost", "::1"):
+        logging.getLogger("main").warning(
+            "PSHEET_HOST=%s：本工具沒有登入機制，同網路的任何人都能使用（含按下付費查詢）。"
+            "只在可信任的內網使用，或在前面加登入保護，見 README「多人使用與對外架設」。", host)
     if sys.stdout is None or sys.stderr is None:  # pythonw 背景執行：紀錄寫檔
         (BASE / "data").mkdir(exist_ok=True)
         sys.stdout = sys.stderr = open(BASE / "data" / "psheet.log", "a", encoding="utf-8", buffering=1)
