@@ -285,7 +285,10 @@ async function lookupParcel() {
 
 async function officialLand(confirmed) {
   if (!window.MOI || !window.MOI.moi) {
-    setStatus('moi-status', '這個功能要自備「內政部地政整合資訊服務共享協作平台」金鑰，每筆約 NT$1。申請與設定步驟見專案的 docs/金鑰申請.md。', 'error');
+    const el = document.getElementById('moi-status');
+    el.className = 'status-msg error';
+    el.innerHTML = '這個功能要自備「內政部地政整合資訊服務共享協作平台」金鑰，每筆約 NT$1。' +
+      '<a href="https://github.com/Larryveryhandsome/tw-property-sheet/blob/main/docs/%E9%87%91%E9%91%B0%E7%94%B3%E8%AB%8B.md" target="_blank" rel="noopener">看申請與設定教學</a>';
     return;
   }
   const county = val('land_county'), section = val('land_section'), number = val('land_number');

@@ -3,7 +3,7 @@
 * { box-sizing: border-box; }
 
 body {
-  font-family: "Microsoft JhengHei", "Noto Sans TC", sans-serif;
+  font-family: -apple-system,BlinkMacSystemFont,"PingFang TC","Noto Sans TC","Microsoft JhengHei","Heiti TC",sans-serif;
   background: #f4f6f9;
   margin: 0;
   color: #333;
