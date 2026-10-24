@@ -3,10 +3,13 @@
 啟動：python main.py（Windows 背景執行請雙擊「背景啟動.vbs」）然後開 http://localhost:8000
 """
 import asyncio
+import base64
+import binascii
 import io
 import json
 import logging
 import os
+import secrets
 import sys
 from datetime import date
 from pathlib import Path
@@ -28,8 +31,8 @@ def load_dotenv(path=BASE / ".env"):
 
 load_dotenv()
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile  # noqa: E402
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse  # noqa: E402
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile  # noqa: E402
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 
 from services import ai, geo, moi, parcel, risk, tenement  # noqa: E402
@@ -60,7 +63,59 @@ def parse_json(text: str, what: str = "表單") -> dict:
         raise HTTPException(400, f"{what} 格式錯誤")
     return d
 
+# ── 存取控制（決策 #8：不做完整登入系統）────────────────────────────────
+# 預設只監聽本機 127.0.0.1。要讓區網的同事連進來（PSHEET_HOST=0.0.0.0 或指定 IP），
+# 必須先設 PSHEET_PASSWORD（至少 8 個字），否則拒絕啟動。設了密碼後，所有頁面與 API 都要
+# 用 HTTP Basic 帳密進入（帳號隨意填，只核對密碼）。
+LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
+MIN_PASSWORD_LEN = 8
+PASSWORD = os.getenv("PSHEET_PASSWORD", "")
+
+
+def bind_config(env=None):
+    """讀監聽位址與埠號；沒設就是 127.0.0.1:8000（只有本機能連）。"""
+    env = os.environ if env is None else env
+    host = (env.get("PSHEET_HOST") or "").strip() or "127.0.0.1"
+    return host, int((env.get("PSHEET_PORT") or "").strip() or "8000")
+
+
+def startup_check(host: str, password: str):
+    """回傳 (可以啟動嗎, 說明)。開放區網卻沒設夠長的密碼就不准啟動。"""
+    if host in LOCAL_HOSTS:
+        return True, "只監聽本機（" + host + "），區網其他電腦連不到。"
+    if not password:
+        return False, (f"拒絕啟動：PSHEET_HOST={host} 會讓同網路的其他電腦連進來，但沒有設定 PSHEET_PASSWORD。"
+                       f"請在 .env 加上 PSHEET_PASSWORD=至少{MIN_PASSWORD_LEN}個字的密碼，"
+                       "或把 PSHEET_HOST 改回 127.0.0.1（只給本機用）。")
+    if len(password) < MIN_PASSWORD_LEN:
+        return False, f"拒絕啟動：PSHEET_PASSWORD 太短（至少 {MIN_PASSWORD_LEN} 個字）。"
+    return True, f"開放區網（{host}），所有頁面與 API 都要輸入 PSHEET_PASSWORD 才能使用。"
+
+
+def _authorized(header: str, password: str) -> bool:
+    if not header.lower().startswith("basic "):
+        return False
+    try:
+        raw = base64.b64decode(header[6:].strip(), validate=True).decode("utf-8")
+    except (binascii.Error, UnicodeDecodeError, ValueError):
+        return False
+    _, sep, given = raw.partition(":")
+    return bool(sep) and secrets.compare_digest(given.encode("utf-8"), password.encode("utf-8"))
+
+
 app = FastAPI(title="tw-property-sheet 物調表產生器")
+
+
+@app.middleware("http")
+async def require_password(request: Request, call_next):
+    """有設 PSHEET_PASSWORD 時，所有路徑（頁面、靜態檔、API、/health）都要先驗證。"""
+    if PASSWORD and not _authorized(request.headers.get("authorization", ""), PASSWORD):
+        return Response("需要密碼（PSHEET_PASSWORD）才能使用。", status_code=401,
+                        media_type="text/plain; charset=utf-8",
+                        headers={"WWW-Authenticate": 'Basic realm="tw-property-sheet", charset="UTF-8"'})
+    return await call_next(request)
+
+
 app.mount("/static", StaticFiles(directory=str(BASE / "static")), name="static")
 
 
@@ -213,15 +268,21 @@ async def generate(form_json: str = Form(...), photos: List[UploadFile] = File(d
 
 if __name__ == "__main__":
     import uvicorn
-    host, port = os.getenv("PSHEET_HOST", "127.0.0.1"), int(os.getenv("PSHEET_PORT", "8000"))
-    if host not in ("127.0.0.1", "localhost", "::1"):
-        logging.getLogger("main").warning(
-            "PSHEET_HOST=%s：本工具沒有登入機制，同網路的任何人都能使用（含按下付費查詢）。"
-            "只在可信任的內網使用，或在前面加登入保護，見 README「多人使用與對外架設」。", host)
+    host, port = bind_config()
     if sys.stdout is None or sys.stderr is None:  # pythonw 背景執行：紀錄寫檔
         (BASE / "data").mkdir(exist_ok=True)
         sys.stdout = sys.stderr = open(BASE / "data" / "psheet.log", "a", encoding="utf-8", buffering=1)
         logging.getLogger().handlers[0].stream = sys.stderr
+    ok, msg = startup_check(host, PASSWORD)
+    log = logging.getLogger("main")
+    if not ok:
+        log.error(msg)
+        sys.exit(2)
+    log.info(msg)
+    if "--check" in sys.argv[1:]:   # 背景啟動.vbs 先用這個檢查設定，不通過就跳視窗說明
+        sys.exit(0)
+    if host not in LOCAL_HOSTS:
+        log.warning("密碼只擋住區網裡沒密碼的人；請勿直接架到公開網路，見 README「多人使用與對外架設」。")
     (BASE / "data").mkdir(exist_ok=True)
     (BASE / "data" / "psheet.pid").write_text(str(os.getpid()), encoding="utf-8")
     uvicorn.run(app, host=host, port=port, log_config=None)
