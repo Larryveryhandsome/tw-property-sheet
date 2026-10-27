@@ -1,0 +1,19 @@
+tw-property-sheet
+Copyright 2026 Larryveryhandsome and tw-property-sheet contributors
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+物調表範本為本專案自行設計的通用格式。自動查詢的資料來自公開服務
+（ArcGIS World Geocoding、內政部國土測繪中心、OpenStreetMap），原則上僅供參考，
+物件資訊應以登記謄本、主管機關資料與現場確認為準。
+地圖資料 © OpenStreetMap contributors（ODbL）。
+
+作者與客製化服務（Attribution）
+--------------------------------
+作者：林其衞／留白事務所（Author: Lin Chi-Wei / Blank Office）
+需要改成你們公司的版本、幫忙安裝或串接？加 LINE 官方帳號 @812ibtir
+（留白事務所・林其衞），原則上 1～2 個工作天回覆報價。
+https://line.me/R/ti/p/@812ibtir
+
+依授權條款，轉散布本作品或其衍生作品時，請保留本 NOTICE 檔的上述署名內容。
+(Under Apache-2.0 Section 4(d), redistributions must retain this NOTICE attribution.)
